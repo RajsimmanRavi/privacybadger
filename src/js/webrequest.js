@@ -1045,12 +1045,14 @@ function dispatcher(request, sender, sendResponse) {
 
   case "mergeUserData": {
     // called when a user uploads data exported from another Badger instance
-    badger.mergeUserData(request.data);
-    sendResponse({
-      disabledSites: badger.getDisabledSites(),
-      origins: badger.storage.getTrackingDomains(),
+    badger.mergeUserData(request.data).then(() => {
+      sendResponse({
+        disabledSites: badger.getDisabledSites(),
+        origins: badger.storage.getTrackingDomains(),
+      });
     });
-    break;
+    // indicate this is an async response to chrome.runtime.onMessage
+    return true;
   }
 
   case "updateSettings": {

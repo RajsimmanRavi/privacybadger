@@ -43,17 +43,18 @@ function Badger() {
   self.setPrivacyOverrides();
 
   self.widgetList = [];
-  widgetLoader.loadWidgetsFromFile("data/socialwidgets.json", (response) => {
-    self.widgetList = response;
+  let widgetListPromise = widgetLoader.loadWidgetsFromFile(
+    "data/socialwidgets.json").catch(console.error);
+  widgetListPromise.then(widgets => {
+    self.widgetList = widgets;
   });
 
   self.storage = new pbStorage.BadgerPen(async function (thisStorage) {
     self.initializeDefaultSettings();
     self.heuristicBlocking = new HeuristicBlocking.HeuristicBlocker(thisStorage);
 
-    // TODO there are async migrations
     // TODO is this the right place for migrations?
-    self.runMigrations();
+    let migrationsPromise = self.runMigrations();
 
     // kick off async initialization steps
     let seedDataPromise = self.loadFirstRunSeedData().catch(console.error),
@@ -77,6 +78,8 @@ function Badger() {
     });
 
     // wait for async functions (seed data, yellowlist, ...) to resolve
+    await widgetListPromise;
+    await migrationsPromise;
     await seedDataPromise;
     await ylistPromise;
     await dntHashesPromise;
@@ -687,13 +690,18 @@ Badger.prototype = {
     }
   },
 
-  runMigrations: function() {
-    var self = this;
-    var settings = self.getSettings();
-    var migrationLevel = settings.getItem('migrationLevel');
+  /**
+   * @return {Promise}
+   */
+  runMigrations: function () {
+    let self = this,
+      settings = self.getSettings(),
+      migrationLevel = settings.getItem('migrationLevel'),
+      promises = [];
+
     // TODO do not remove any migration methods
     // TODO w/o refactoring migrationLevel handling to work differently
-    var migrations = [
+    const MIGRATIONS = [
       Migrations.changePrivacySettings,
       Migrations.migrateAbpToStorage,
       Migrations.migrateBlockedSubdomainsToCookieblock,
@@ -715,11 +723,15 @@ Badger.prototype = {
       Migrations.resetWebRTCIPHandlingPolicy2,
     ];
 
-    for (var i = migrationLevel; i < migrations.length; i++) {
-      migrations[i].call(Migrations, self);
+    for (let i = migrationLevel; i < MIGRATIONS.length; i++) {
+      let value = MIGRATIONS[i].call(Migrations, self);
+      if (value) {
+        promises.push(value);
+      }
       settings.setItem('migrationLevel', i+1);
     }
 
+    return Promise.all(promises);
   },
 
   /**
@@ -999,22 +1011,26 @@ Badger.prototype = {
    *
    * @param {Object} data the user data to merge in
    * @param {Boolean} [from_migration=false] set when running from a migration to avoid infinite loop
+   * @returns {Promise}
    */
-  mergeUserData: function(data, from_migration) {
+  mergeUserData: function (data, from_migration) {
     let self = this;
+
     // The order of these keys is also the order in which they should be imported.
     // It's important that snitch_map be imported before action_map (#1972)
-    ["snitch_map", "action_map", "settings_map"].forEach(function(key) {
+    ["snitch_map", "action_map", "settings_map"].forEach(function (key) {
       if (data.hasOwnProperty(key)) {
         let storageMap = self.storage.getBadgerStorageObject(key);
         storageMap.merge(data[key]);
       }
     });
 
-    // for exports from older Privacy Badger versions:
-    // fix yellowlist getting out of sync, remove non-tracking domains, etc.
-    if (!from_migration) {
-      self.runMigrations();
+    if (from_migration) {
+      return Promise.resolve();
+    } else {
+      // for exports from older Privacy Badger versions:
+      // fix yellowlist getting out of sync, remove non-tracking domains, etc.
+      return self.runMigrations();
     }
   }
 

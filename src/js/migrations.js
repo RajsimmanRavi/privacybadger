@@ -27,22 +27,7 @@ let exports = {};
 exports.Migrations= {
   changePrivacySettings: noop,
   migrateAbpToStorage: noop,
-
-  migrateBlockedSubdomainsToCookieblock: function(badger) {
-    setTimeout(function() {
-      console.log('MIGRATING BLOCKED SUBDOMAINS THAT ARE ON COOKIE BLOCK LIST');
-      let ylist = badger.storage.getBadgerStorageObject('cookieblock_list');
-      badger.storage.getAllDomainsByPresumedAction(constants.BLOCK).forEach(fqdn => {
-        utils.explodeSubdomains(fqdn, true).forEach(domain => {
-          if (ylist.hasItem(domain)) {
-            console.log('moving', fqdn, 'from block to cookie block');
-            badger.storage.setupHeuristicAction(fqdn, constants.COOKIEBLOCK);
-          }
-        });
-      });
-    }, 1000 * 30);
-  },
-
+  migrateBlockedSubdomainsToCookieblock: noop,
   migrateLegacyFirefoxData: noop,
 
   migrateDntRecheckTimes: function(badger) {
@@ -267,49 +252,54 @@ exports.Migrations= {
   },
 
   forgetCloudflare: function (badger) {
-    let config = {
-      name: '__cfduid'
-    };
-    if (badger.firstPartyDomainPotentiallyRequired) {
-      config.firstPartyDomain = null;
-    }
-
-    chrome.cookies.getAll(config, function (cookies) {
-      console.log("Forgetting Cloudflare domains ...");
-
-      let actionMap = badger.storage.getBadgerStorageObject("action_map"),
-        actionClones = actionMap.getItemClones(),
-        snitchMap = badger.storage.getBadgerStorageObject("snitch_map"),
-        snitchClones = snitchMap.getItemClones(),
-        correctedSites = {},
-        // assume the tracking domains seen on these sites are all Cloudflare
-        cfduidFirstParties = new Set();
-
-      cookies.forEach(function (cookie) {
-        // get the base domain (also removes the leading dot)
-        cfduidFirstParties.add(window.getBaseDomain(cookie.domain));
-      });
-
-      for (let domain in snitchClones) {
-        let newSnitches = snitchClones[domain].filter(
-          item => !cfduidFirstParties.has(item));
-
-        if (newSnitches.length) {
-          correctedSites[domain] = newSnitches;
-        }
+    return new Promise(function (resolve) {
+      let config = {
+        name: '__cfduid'
+      };
+      if (badger.firstPartyDomainPotentiallyRequired) {
+        config.firstPartyDomain = null;
       }
 
-      // clear existing maps and then use mergeUserData to rebuild them
-      actionMap.updateObject({});
-      snitchMap.updateObject({});
+      chrome.cookies.getAll(config, function (cookies) {
+        console.log("Forgetting Cloudflare domains ...");
 
-      const data = {
-        snitch_map: correctedSites,
-        action_map: actionClones
-      };
+        let actionMap = badger.storage.getBadgerStorageObject("action_map"),
+          actionClones = actionMap.getItemClones(),
+          snitchMap = badger.storage.getBadgerStorageObject("snitch_map"),
+          snitchClones = snitchMap.getItemClones(),
+          correctedSites = {},
+          // assume the tracking domains seen on these sites are all Cloudflare
+          cfduidFirstParties = new Set();
 
-      // pass in boolean 2nd parameter to flag that it's run in a migration, preventing infinite loop
-      badger.mergeUserData(data, true);
+        cookies.forEach(function (cookie) {
+          // get the base domain (also removes the leading dot)
+          cfduidFirstParties.add(window.getBaseDomain(cookie.domain));
+        });
+
+        for (let domain in snitchClones) {
+          let newSnitches = snitchClones[domain].filter(
+            item => !cfduidFirstParties.has(item));
+
+          if (newSnitches.length) {
+            correctedSites[domain] = newSnitches;
+          }
+        }
+
+        // clear existing maps and then use mergeUserData to rebuild them
+        actionMap.updateObject({});
+        snitchMap.updateObject({});
+
+        const data = {
+          snitch_map: correctedSites,
+          action_map: actionClones
+        };
+
+        // pass in boolean 2nd parameter to flag that it's run in a migration,
+        // preventing infinite loop
+        badger.mergeUserData(data, true);
+
+        resolve();
+      });
     });
   },
 
@@ -320,31 +310,41 @@ exports.Migrations= {
   },
 
   resetWebRTCIPHandlingPolicy2: function (badger) {
-    if (!badger.webRTCAvailable) {
-      return;
-    }
-
-    const cpn = chrome.privacy.network;
-
-    cpn.webRTCIPHandlingPolicy.get({}, function (result) {
-      if (!result.levelOfControl.endsWith('_by_this_extension')) {
-        return;
+    return new Promise(function (resolve) {
+      if (!badger.webRTCAvailable) {
+        return resolve();
       }
 
-      // migrate default (disabled) setting for old Badger versions
-      // from Mode 3 to Mode 1
-      if (result.value == 'default_public_interface_only') {
-        console.log("Resetting webRTCIPHandlingPolicy ...");
-        cpn.webRTCIPHandlingPolicy.clear({});
+      const cpn = chrome.privacy.network;
 
-      // migrate enabled setting for more recent Badger versions
-      // from Mode 4 to Mode 3
-      } else if (result.value == 'disable_non_proxied_udp') {
-        console.log("Updating WebRTC IP leak protection setting ...");
-        cpn.webRTCIPHandlingPolicy.set({
-          value: 'default_public_interface_only'
-        });
-      }
+      cpn.webRTCIPHandlingPolicy.get({}, function (result) {
+        if (!result.levelOfControl.endsWith('_by_this_extension')) {
+          return resolve();
+        }
+
+        // migrate default (disabled) setting for old Badger versions
+        // from Mode 3 to Mode 1
+        if (result.value == 'default_public_interface_only') {
+          console.log("Resetting webRTCIPHandlingPolicy ...");
+          cpn.webRTCIPHandlingPolicy.clear({}, function () {
+            resolve();
+          });
+
+        // migrate enabled setting for more recent Badger versions
+        // from Mode 4 to Mode 3
+        } else if (result.value == 'disable_non_proxied_udp') {
+          console.log("Updating WebRTC IP leak protection setting ...");
+          cpn.webRTCIPHandlingPolicy.set({
+            value: 'default_public_interface_only'
+          }, function () {
+            resolve();
+          });
+
+        // no migration necessary, we are done
+        } else {
+          resolve();
+        }
+      });
     });
   }
 
