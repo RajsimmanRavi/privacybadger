@@ -193,9 +193,6 @@ class WidgetsTest(pbtest.PBSeleniumTest):
         # verify the widget got replaced
         self.assert_replacement()
 
-    # TODO remove retrying after
-    # https://github.com/EFForg/privacybadger/pull/2604
-    @pbtest.repeat_if_failed(7)
     def test_activation(self):
         self.block_domain(self.THIRD_PARTY_DOMAIN)
         self.load_url(self.BASIC_FIXTURE_URL)
